@@ -1,0 +1,276 @@
+---
+title: "DDK"
+author: "Jidde Jacobi"
+date: "05/03/2021"
+output: html_document
+---
+  
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, include=FALSE}
+library("rlang")
+library("dplyr")
+library("tidyr")
+library("stringr")
+library("ggplot2")
+```
+
+### Load data
+```{r}
+setwd("/Users/45598770/Documents/analysis/DDK")
+
+ctrl <- read.csv("CTRLsheet.csv", encoding="UTF-8",stringsAsFactors = T)
+pd <- read.csv("PDsheet.csv", encoding="UTF-8",stringsAsFactors = T)
+
+ctrl <- cbind(group = "typical", ctrl)
+pd <- cbind(group = "PD", pd)
+
+df <- rbind(ctrl, pd)
+rm(ctrl, pd)
+
+# set variables to numeric
+df <- df %>% 
+ mutate_at(vars(!1:8), as.character) %>%
+ mutate_at(vars(!1:8), as.numeric) # produces errors which is OK
+
+
+
+# remove PD24 because of Parkinsonism diagnosis
+df <- df[!df$subj == "PD 24 P",]
+df$subj <- droplevels(df$subj)
+
+# remove /pa/ trials
+df <- df[!df$traj == "LA",]
+df$traj <- droplevels(df$traj)
+```
+
+### Data wrangling
+
+Extract info from filename, merge trialnumber and repetition
+```{r}
+df<- df %>%
+  separate(fname, c("project", "prompt", "block", "remove", "remove2", "trialno", "repetition"), sep = "_") %>%
+  mutate(trial=str_c(trialno,repetition)) %>%
+  select(!c("project", "remove", "remove2", "trialno", "repetition", "outl", "yGONS",	"yPVEL",	"yNONS",	"yMAXC",	"yNOFFS",	"yPVEL2",	"yGOFFS", "vGONS",	"vPVEL",	"vNONS",	"vMAXC",	"vNOFFS",	"vPVEL2",	"vGOFFS"
+))
+```
+
+Checks
+```{r}
+table(df$subj, df$seg)
+table(df$seg, df$traj)
+```
+
+Remove outliers
+```{r}
+# df <- df[!(df$subj == "CTRL 14" & df$trial == "013201"),] # first reps extremely slow
+df <- df[!df$sub == "CTRL 21",] # lengthens the vowel and has a weird prosodic structure
+# df <- df[!df$sub == "CTRL 15",] # extremely slow
+# df <- df[!(df$subj == "CTRL 11" & df$trial == "013201"),] # first trial, reps extremely slow
+df <- df[!(df$subj == "PD 17" & df$trial == "013701"),] # misreading prompt
+df <- df[!(df$subj == "PD 17" & df$trial == "014801"),] # subj laughing during trial
+df <- df[!(df$subj == "PD 09" & df$trial == "013201"),] # task isn't clear to subj
+df <- df[!(df$subj == "PD 14" & df$trial == "013801"),] # no clear gestures
+
+# CTRL15, PD07, PD08, PD10 are extremely slow
+```
+
+
+
+```{r}
+# gestural duration
+df$dur <- df$tGOFFS-df$tGONS
+
+# duration of acceleration phase
+df$accphase <- df$tPVEL-df$tGONS
+
+df <- df %>%
+    group_by(subj, trial) %>%
+    mutate(syldur = tGONS - lag(tGONS, default = first(tGONS))) %>%
+    ungroup()
+
+# duration of deceleration phase
+df$decphase <- df$tMAXC-df$tPVEL
+
+# count repetitions
+df <- df %>% 
+  group_by(subj, trial) %>% 
+  mutate(rep = n()) %>%
+    ungroup()
+
+# count repetitions
+df <- df %>% 
+  group_by(subj, trial) %>% 
+  mutate(rep = n()) %>%
+  ungroup()
+
+# calculate euclidean distances and time lag between successive repetitions
+df <- df %>%
+  group_by(subj, trial) %>%
+  mutate(dist2previous = sqrt( (xMAXC - lag(xMAXC))^2 + (zMAXC - lag(zMAXC))^2 )) %>% # calculate euclidean distances
+  mutate(temp.diff = tMAXC - lag(tMAXC)) %>% # calculate lag
+  mutate(temp.stability = sd(temp.diff, na.rm = T)) %>%
+  ungroup()
+
+
+# calculate euclidean distances to centroid of point cloud, and variability within the cloud
+df <- df %>%
+  group_by(subj, trial) %>%
+  mutate(xMean = mean(xMAXC), zMean = mean(zMAXC)) %>% # centroid of point cloud
+  mutate(dist2centroid = sqrt((zMAXC - zMean)^2 + (xMAXC - xMean)^2 )) %>%
+  mutate(spread = sd(dist2centroid)) %>%
+  ungroup()
+
+# sanity check centroid
+p  <- ggplot(subset(df,  subj == "CTRL 01" & trial == "013701")) + geom_point(aes(x=xMAXC, y=zMAXC))
+p + geom_point(aes(x=xMean, y=zMean), color="red", size=5)
+
+p  <- ggplot(subset(df,  subj == "CTRL 06" & trial == "013501")) + geom_point(aes(x=xMAXC, y=zMAXC))
+p + geom_point(aes(x=xMean, y=zMean), color="red", size=5)
+
+p  <- ggplot(subset(df,  subj == "CTRL 07" & trial == "013501")) + geom_point(aes(x=xMAXC, y=zMAXC))
+p + geom_point(aes(x=xMean, y=zMean), color="red", size=5)
+df$dist2centroid[df$subj == "CTRL 07" & df$trial == "013501"]
+
+p  <- ggplot(subset(df,  subj == "CTRL 07" & trial == "013601")) + geom_point(aes(x=xMAXC, y=zMAXC))
+p + geom_point(aes(x=xMean, y=zMean), color="red", size=5)
+rm(p)
+```
+
+
+Set order of columns
+```{r}
+df <- df %>%
+  select(subj, group, block, trial, prompt, seg, traj, note, repetitions, dur,accphase, decphase, rep, dist2previous, dist2centroid, temp.diff, everything())
+```
+
+
+Retrieve syllable rate
+
+```{r}
+# retrieve number of rep per trial
+df <- df %>%
+  group_by(subj,trial) %>%
+  mutate(no.reps = n())
+
+
+# remove < 2 repetition trials
+df <- df[df$no.reps > 2,]
+
+# select only first and last rep
+df_lim <-df %>%
+  group_by(subj,trial) %>%
+  slice(c(1, n())) %>%
+  mutate(whichRep = if_else(row_number() == 1, 'first', 'last') ) %>%
+  ungroup()
+
+# retrieve GONS of first rep
+start <- df_lim %>%
+  group_by(subj,trial) %>%
+  filter(whichRep == "first") %>%
+  rename(start = tGONS) %>%
+  select(subj,trial,start) %>%
+  ungroup()
+
+# retrieve GOFFS of final rep and merge with GONS
+rep.dur <- df_lim %>%
+  group_by(subj,trial) %>%
+  filter(whichRep == "last") %>%
+  rename(end = tGOFFS) %>%
+  select(subj,trial,end) %>%
+  inner_join(start, by=c("subj","trial")) %>%
+  select(subj, trial, start, end) %>%
+  ungroup()
+  
+# merge
+df <- df %>%
+ right_join(rep.dur, by = c("subj","trial")) %>%
+  group_by(subj,trial) %>%
+  mutate(mean.rep.dur = ((end - start)/n())) %>%
+  ungroup()
+
+rm(df_lim, rep.dur, start)
+
+```
+
+
+
+### Plots
+Examine speech rate by looking at mean duration of a repetition in every trial
+```{r}
+ggplot(df[df$block == "DDK1" & df$prompt == "TA",], aes(x=subj, y=mean.rep.dur, color=group)) + geom_boxplot() + labs(title="mean duration /ta/ repetition block 1", y="duration (ms)", x="Subject") 
+ggplot(df[df$block == "DDK2" & df$prompt == "TA",], aes(x=subj, y=mean.rep.dur, color=group)) + geom_boxplot() + labs(title="mean duration /ta/ repetition block 2", y="duration (ms)", x="Subject") 
+```
+
+
+Examine speech rate by looking at mean duration of a repetition in every trial
+```{r}
+ggplot(df[df$block == "DDK1" & df$prompt == "KA",], aes(x=subj, y=mean.rep.dur, color=group)) + geom_boxplot() + labs(title="mean duration /ka/ repetition block 1", y="duration (ms)", x="Subject") 
+ggplot(df[df$block == "DDK2" & df$prompt == "KA",], aes(x=subj, y=mean.rep.dur, color=group)) + geom_boxplot() + labs(title="mean duration /ka/ repetition block 2", y="duration (ms)", x="Subject") 
+```
+
+Compare variation around centroid for /ta/
+```{r}
+ggplot(df[df$block == "DDK1" & df$prompt == "TA",], aes(x=subj, y=dist2centroid, color=group)) + geom_boxplot() + labs(title="Distance to center of cloud in /ta/", y="Euclidian distance (mm)", x="Subject") 
+ggplot(df[df$block == "DDK2" & df$prompt == "TA",], aes(x=subj, y=dist2centroid, color=group)) + geom_boxplot() + labs(title="Distance to center of cloud in /ta/", y="Euclidian distance (mm)", x="Subject") 
+```
+
+
+Compare variation around centroid for /ka/
+```{r}
+ggplot(df[df$block == "DDK1" & df$prompt == "KA",], aes(x=subj, y=dist2centroid, color=group)) + geom_boxplot() + labs(title="Distance to center of cloud in /ka/", y="Euclidian distance (mm)", x="Subject") 
+ggplot(df[df$block == "DDK2" & df$prompt == "KA",], aes(x=subj, y=dist2centroid, color=group)) + geom_boxplot() + labs(title="Distance to center of cloud in /ka/", y="Euclidian distance (mm)", x="Subject") 
+```
+
+
+Compare displacement between successive repetitions for /ta/
+```{r}
+ggplot(df[df$block == "DDK1" & df$prompt == "TA",], aes(x=subj, y=dist2previous, color=group)) + geom_boxplot() + labs(title="Distance between successive repetitions in /ta/", y="Euclidian distance (mm)", x="Subject") 
+ggplot(df[df$block == "DDK2" & df$prompt == "TA",], aes(x=subj, y=dist2previous, color=group)) + geom_boxplot() + labs(title="Distance between successive repetitions in /ta/", y="Euclidian distance (mm)", x="Subject") 
+```
+
+
+Compare displacement between successive repetitions for /ka/
+```{r}
+ggplot(df[df$block == "DDK1" & df$prompt == "KA",], aes(x=subj, y=dist2previous, color=group)) + geom_boxplot() + labs(title="Distance between successive repetitions in in /ka/", y="Euclidian distance (mm)", x="Subject") 
+ggplot(df[df$block == "DDK2" & df$prompt == "KA",], aes(x=subj, y=dist2previous, color=group)) + geom_boxplot() + labs(title="Distance between successive repetitions in in /ka/", y="Euclidian distance (mm)", x="Subject") 
+```
+
+
+Temporal stability
+```{r}
+ggplot(df[df$block == "DDK1",], aes(x=subj, y=temp.stability, color=group)) + geom_boxplot() + labs(title="Temporal stability block 1", y="Variability", x="Subject")
+
+ggplot(df[df$block == "DDK2",], aes(x=subj, y=temp.stability, color=group)) + geom_boxplot() + labs(title="Temporal stability block 2", y="Variability", x="Subject")
+```
+
+
+
+Across syllables
+```{r}
+#boxplots
+ggplot(df[df$block == "DDK1",], aes(x=subj, y=mean.rep.dur, color=group)) + geom_boxplot() + labs(title="Gestural duration block 1", y="Gestural duration (ms)", x="Subjects") + ylim(0, 750)
+ggplot(df[df$block == "DDK2",], aes(x=subj, y=mean.rep.dur, color=group)) + geom_boxplot() + labs(title="Gestural duration block 2", y="Gestural duration (ms)", x="Subjects") + ylim(0, 750)
+```
+Per syllable
+```{r}
+#boxplots
+ggplot(df[(df$block == "DDK1" & df$prompt == "PA"),], aes(x=subj, y=mean.rep.dur, color=group)) + geom_boxplot() + labs(title="Gestural duration /p/ block 1", y="Gestural duration (ms)", x="Subjects") + ylim(0, 750)
+ggplot(df[(df$block == "DDK2" & df$prompt == "PA"),], aes(x=subj, y=mean.rep.dur, color=group)) + geom_boxplot() + labs(title="Gestural duration /p/ block 2", y="Gestural duration (ms)", x="Subjects") + ylim(0, 750)
+```
+
+```{r}
+#boxplots
+ggplot(df[(df$block == "DDK1" & df$prompt == "TA"),], aes(x=subj, y=mean.rep.dur, color=group)) + geom_boxplot() + labs(title="Gestural duration /t/ block 1", y="Gestural duration (ms)", x="Subjects") + ylim(0, 750)
+ggplot(df[(df$block == "DDK2" & df$prompt == "TA"),], aes(x=subj, y=mean.rep.dur, color=group)) + geom_boxplot() + labs(title="Gestural duration /t/ block 2", y="Gestural duration (ms)", x="Subjects") + ylim(0, 750)
+```
+
+```{r}
+#boxplots
+ggplot(df[(df$block == "DDK1" & df$prompt == "KA"),], aes(x=subj, y=mean.rep.dur, color=group)) + geom_boxplot() + labs(title="Gestural duration /k/ block 1", y="Gestural duration (ms)", x="Subjects") + ylim(0, 750)
+ggplot(df[(df$block == "DDK2" & df$prompt == "KA"),], aes(x=subj, y=mean.rep.dur, color=group)) + geom_boxplot() + labs(title="Gestural duration /k/ block 2", y="Gestural duration (ms)", x="Subjects") + ylim(0, 750)
+```
